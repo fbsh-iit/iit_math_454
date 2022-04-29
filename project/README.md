@@ -1,193 +1,159 @@
 # Overview of Register Allocation in Modern Compiler from Graph Coloring to Machine Learning
 
 ## Introduction
-In this project, I cover register allocation and assignment, which are among the most important compiler optimizations for almost all computer architectures. The problem addressed is how to minimize traffic between the CPU registers, which are usually few and fast to access, and whatever lies beyond them in the memory hierarchy, including one or more levels of cache and main memory, all of which are slower to access and larger, generally increasing in size and decreasing in speed the further we move away from the registers.
 
-In this project, I will review the register allocation strategy in an experimental PL/I optimizing compiler and the state-of-the-art modern compiler, LLVM. I will reimplement both register allocation algorithms, benchmark and comparing different efficiency between heuristic greedy algorithm and machine learning algorithm on spill.
+In this project, I cover register allocation, which are among the most important compiler optimizations for almost all computer architectures. The problem addressed is how to minimize traffic between the CPU registers, which are usually few and fast to access, and whatever lies beyond them in the memory hierarchy, including one or more levels of cache and main memory, all of which are slower to access and larger, generally increasing in size and decreasing in speed the further we move away from the registers.
 
-## Register Allocation Overview
+In this project, I will review the register allocation strategy in an experimental PL/I optimizing compiler and the state-of-the-art modern compiler, LLVM. I will reimplement both register allocation algorithms, benchmark and comparing different efficiency between 
 
-Register allocation is best carried out on low-level intermediate code or assembly language. It is essential that all loads from and stores to memory, including their address computations, be represented explicitly. The project's central focus, global register allocation by graph coloring, usually results in very effective allocations without a major cost in compilation speed. It views the fact that two quantities must be in registers simultaneously as excluding them from being in the same register. It represents the quantities by nodes in a graph and the exclusions (called interferences) by arcs between the corresponding nodes; the nodes may represent real registers also, and the arcs may represent exclusions such as the base address in a memory access may not be the register r0. Given the graph corresponding to an entire procedure, this method then attempts to color the nodes, with the number of colors equal to the number of available real registers. Every node is assigned a color that is distinct from those of all the nodes adjacent to it. If this cannot be achieved, additional code is introduced to storequantities to memory and to reload them as needed, and the process is repeated until a satisfactory coloring is achieved. As we will see, even very simple formulations of graph-coloring problems are NP-complete, so one of the most important facets of making global register allocation as effective as possible is using highly effective heuristics.
+    - graph coloring algorithm 
+    - heuristic greedy algorithm & Hopfield NN on spill
+
+## Overview of Register Allocation in Compiler
+
+Register allocation is best carried out on low-level intermediate code or assembly language. It is essential that all loads from and stores to memory, including their address computations, be represented explicitly. Basic register allocation is including two main step: assign spare register and spill register if register runs out.
+
+The project's central focus, global register allocation by graph coloring, usually results in very effective allocations without a major cost in compilation speed. It views the fact that two quantities must be in registers simultaneously as excluding them from being in the same register. It represents the quantities by nodes in a graph and the exclusions (called interferences) by arcs between the corresponding nodes; the nodes may represent real registers also, and the arcs may represent exclusions such as the base address in a memory access may not be the register r0. 
+
+Given the graph corresponding to an entire procedure, this method then attempts to color the nodes, with the number of colors equal to the number of available real registers. Every node is assigned a color that is distinct from those of all the nodes adjacent to it. If this cannot be achieved, additional code is introduced to storequantities to memory and to reload them as needed, and the process is repeated until a satisfactory coloring is achieved. As we will see, even very simple formulations of graph-coloring problems are NP-complete, so one of the most important facets of making global register allocation as effective as possible is using highly effective heuristics.
+
+Register allocation maps virtual registers to target machine registers. Limited number of registers, varied instruction set and system conventions are the main constraints of the performance of the RA stratagy. Hense, register allocation could be ragard as an optimization problem, including three major tasks:
+
+1. minimize spill and put it in less frequently executed places 
+2. use as few registers as possible 
+3. eliminate copy instructions
+
+Since the register interference graph is a large and massive data structure, the state-of-art compiler, LLVM, used linear scan rather than graph coloring to do the register assignment task.
 
 ## Basic Example
 
-First, we will discuss a simple example that uses few variables and registers. Below is a simple section of code, on the left is the code and on the right is the live set at each step of the code [3].
+The following simple example contains few variables and registers usage. In the following code block, I presented the live set onthe right and varibale behavior on the left. 
 
-At the beginning of the code, a variable _a_ is alive. Then _a_ is used to compute a new variable, _b_, which enters the live set. _b_ is used to compute another new variable, _c_, which also enters the live set. Because this is the last time this instance of _b_ is used, _b_ exits the live set. Then a new instance of _b_ is created using _c_. _c_ is not used again so it exits the live set. At the end we are left with _a_ and _b_ in the live set.
+Firstly, a variable _a_ is defined. Then _a_ is used to compute a new variable, _b_, which enters the live set. _b_ is used to compute another new variable, _c_, which also enters the live set. Because this is the last time this instance of _b_ is used, _b_ exits the live set. Then a new instance of _b_ is created using _c_. _c_ is not used again so it exits the live set. At the end we are left with _a_ and _b_ in the live set.
 
 ```
-                {a}
-b = a + 2
-                {a, b}
-c = b * b
-                {a, c}
-b = c + 1
-                {a, b}
+                            {a}
+    b = a + 2
+                            {a, b}
+    c = b + b
+                            {a, c}
+    b = c + 1
+                            {a, b}
 return b * a
 ```
 
-Chaitin's algorithm is designed to take an intermediate language as input rather than high-level code. The intermediate language indicates when variables are defined, when they are used, and whether they are dead or alive.
+In Chaitin's algorithm [1], a dual representation is applied, including a bit matrix and adjacency vectors.
 
-In this Python implementation of Chaitin's algorithm, the above code can be represented to the following intermediate language.
+The bit matrix for an $\mathbf{N}$-node interference graph consists of a symmetric matrix of $\mathbf{N}$ bits by $\mathbf{N}$ bits. The bit at row I and column $J$ is a 1 if and only if nodes I and $J$ are adjacent. By keeping for each node in the graph a vector giving the set of nodes which are adjacent to it. The length of this vector is equal to the degree of the node.
+
+The algorithm for building the interference graph is therefore a two pass algorithm. In the first pass over the intermediate language, the bit matrix is used to calculate the degree of each node. Then the $\mathbf{N}$ adjacency vectors are storage allocated, and a second pass is made over the program intermediate language in order to fill in the adjacency vectors. 
+
+## Algorithm 1
+- Choose an arbitrary node of degree less than k .
+- Push that node onto the stack and remove all of it’s outgoing edges .
+- Check if the remaining edges have degree less than k,   
+  - if YES goto  5 else goto spill
+- If the degree of any remaining vertex is less than k then push it onto to the stack .
+- If there is no more edge available to push and if all edges are present in the stack POP each node and color them such that no two adjacent nodes have same color.
+- Number of colors assigned to nodes is the minimum number of registers needed .
+
+The code can be represented by the following graph. The graph has an edge connecting _a_ to _b_ and _a_ to _c_ which is expected based on the live set. 
+The chromatic number represent the number of register needed for execution. 
+
+![Constructed graph](./code_final/Figure_7.png)
+
+![Constructed graph](./code_final/Figure_8.png)
+
+
+
+## No-Spilling Example
+
+The register number is one of the input in the algorithm. In the case below, only threee colors are require to color the graph, but 4 registers are avaliable.
 
 ```
-IntermediateLanguage([
-    Instruction(
-        'bb',
-        [Dec('a', False)],
-        []),
-    Instruction(
-        'b = a + 2',
-        [Dec('b', False)],
-        [Use('a', False)]
-    ),
-    Instruction(
-        'c = b * b',
-        [Dec('c', False)],
-        [Use('b', True)]
-    ),
-    Instruction(
-        'b = c + 1',
-        [Dec('b', False)],
-        [Use('c', True)]
-    ),
-    Instruction(
-        'return b * a',
-        [],
-        [Use('a', True), Use('b', True)]
-    )
-])
+    b = a + 2
+    c = b + b
+    b = c + 1
+    f = 2 + e   
+    b = d + e
+    e = e - 1
+    b = f + c
 ```
 
-The code and intermediate language can be represented by the following graph. The graph has an edge connecting _a_ to _b_ and _a_ to _c_ which is expected based on the live set.
-
-![Constructed graph](./Figure_1.png)
-
-This graph can be 2-colored, indicating two registers are required to execute the code.
+![Coloring solution](./Figure_1.png)
 
 ![Coloring solution](./Figure_2.png)
 
-## Subsumption Example
 
-After building the interference graph, the next step of the algorithm is to eliminate unnecessary register copy operations. This is done by coalescing or combining the nodes which are the source and targets of copy operations.
+## Spilling Example
 
-The previous example can be modified to add a new variable, _d_, which is a copy of _c_. _d_ is then used in place of _c_ in the remainder of the example. When the initial interference graph is built, it shows that there is interference between _a_ and _b_, _a_ and _c_, and _a_ and _d_. 
+In the case below, only 4 colors are require to color the graph, but only 3 registers are avaliable.
 
 ```
-                {a}
-b = a + 2
-                {a, b}
-c = b * b
-                {a, c}
-d = c
-                {a, d}
-b = d + 1
-                {a, b}
-return b * a
+    a = b + c
+    d = a
+    e = d + f
+    f = 2 + e
+    b = d + e
+    e = e - 1
+    b = f + c
+    a = e
 ```
 
-![Subsumption Example - Initial](images/subsumption-example-initial.png)
+The graph coloring algorithm will not be able find a way to 4-color the graph in its current form. At this point the algorithm will have to spill at least one variable to main memory. Spill algothitm determin which variable to spill.
 
-However, in the coalescing phase, the algorithm identifies the copy from _c_ to _d_ and replaces references of _d_ with _c_. The graph now matches the previous example which has already been shown to be 2-colorable by the algorithm.
+First, the algorithm computes a cost estimate of each variable. This cost estimate is equal to the degree of the nodes.
 
+After computing the cost estimates, the algorithm will add edges to the node we pick on the graph to reduce conflicts. The algorithm will then rebuild the interference graph, check for unnecessary copy operations, and attempt to color the graph again. 
 
-## Multiple Basic Blocks
-
-Chaitin's register allocation example can be applied to programs with multiple basic blocks as well. Although this example is larger and more complex than the previous examples, the same steps still apply [4]. The algorithm computes the interference graph, checks for unnecessary copy operations, and colors the graph.
-
-
-The above diagram was taken from M. Perkowski's slides [4].
-
-![Constructed graph](./Figure_1.png)
-
-One of the inputs to the algorithm are the colors (registers) available, so as long as four colors are available to color the graph, no additional steps are necessary because the graph is 4-colorable.
-
-![Coloring solution](./Figure_2.png)
-
-## Spilling
-
-The previous example did not require any additional steps beyond what the basic example used because enough colors were available to color the graph without any changes. But what happens if only three colors are available instead of four?
-
-The graph coloring algorithm will not be able find a way to 3-color the graph in its current form and will return an undefined result. At this point the algorithm will have to spill at least one variable to main memory. Determining which variable to spill is a multi-step process.
-
-First, the algorithm computes a cost estimate of each variable. This cost estimate is equal to "the number of definition points plus the number of uses of that computation, where each definition and use is weighted by its estimated execution frequency [1]." The frequency is provided as an input into the algorithm for each basic block.
-
-After computing the cost estimates, the algorithm will pick which variables to spill based on their costs and insert the instructions to spill the chosen variables into the intermediate language. The algorithm will then rebuild the interference graph, check for unnecessary copy operations, and attempt to color the graph again. Typically only one round of spilling is required, but Chaitin mentions that "it is sometimes necessary to loop through this process yet again, adding a little more spill code, until a 32-coloring is finally obtained [1]."
-
-Below is the interference graph of the multiple building block example.
+Below is the interference graph of above case.
 
 ![Coloring solution](./Figure_3.png)
 
-If we change the number of available registers from four to three, the graph is no longer colorable and at least one spill will be required.
+After computing these costs, the algorithm determines which symbols to spill. It first finds all the symbols in the intermediate language and removes any symbols from the interference graph that have a degree less than the number of colors available. Once it runs out of symbols to remove, it chooses the least costly symbol, adds it to the spill list, and removes it from the graph. This process continues until all symbols have been processed. Node containing highest cost is spilled.
 
-Because this example is not based on an actual program, the frequencies for each basic block can be assigned arbitrarily. For this example, we assign the top basic block a frequency of 1, the left basic block a frequency of 0.75, the right basic block a frequency of 0.25, and the bottom basic block a frequency of 1. These frequencies result in the following cost estimates:
-
-```
-{
-    'a': 2,
-    'b': 2.25,
-    'c': 2,
-    'd': 2.25,
-    'e': 2.25,
-    'f': 2.75
-}
-```
-
-After computing these costs, the algorithm determines which symbols to spill. It first finds all the symbols in the intermediate language and removes any symbols from the interference graph that have a degree less than the number of colors available. Once it runs out of symbols to remove, it chooses the least costly symbol, adds it to the spill list, and removes it from the graph. This process continues until all symbols have been processed.
-
-_a_ and _c_ are the two least costly variables in the example but _a_ has a degree less than the number of colors, so spilling it is not necessary. Therefore, _c_ is spilled.
-
-Below is the interference graph after spilling _c_.
+Below is the interference graph after spilling _e_.
 
 ![Spilling](./Figure_4.png)
 
-
-Now after spilling _c_, the graph is 3-colorable.
-
 ![Spilling](./Figure_5.png)
 
-### Frequency Optimization
 
-If we adjust the frequencies so that _f_ is the least costly symbol, the algorithm will decide to spill _f_.
-
-After spilling _f_, the graph is 3-colorable.
+Now after spilling _e_, the graph is 3-colorable.
 
 ![Coloring solution](./Figure_6.png)
 
-### Optimization by Constructing 1-Layer Hopfield Neural Network
+### Optimization of Spill by Constructing 1-Layer Hopfield Neural Network
 
-LLVM has their own improvement upon the basic linear scanning algorithm which allows for multiple different weights and heuristics along the way. A hopfield network is constructed to determine which variable gets spilled.
+LLVM applied linear scanning algorithm to assgin register. LLVM has their own improvement upon the basic linear scanning algorithm which allows for multiple different weights and heuristics along the way. A hopfield network is constructed to split code block then determine which code block to spill. 
+
+The hopfield network find the optimal split and guaranteed to converge to a local minimum.
 
 $$
-E = -sum_n V_n * ( B_n + sum_{n, m, \text{ linked by } b} V_m * F_b )
+a(t)_{s \times 1}=\left\{\begin{array}{lr}
+p_{s \times 1} & : t=0 \\
+S\left(W_{s \times s} \times a(t-1)_{s \times 1}+b_{s \times 1}\right) & : t \geq 1
+\end{array}\right.
 $$
 
-## Implementation Experience
+$$
+S(x)= \begin{cases}+1 & : x \geq \theta \\ -1 & : x<\theta\end{cases}
+$$
 
-There were several challenges I encountered when implementing this algorithm. 
+In the above model, _W_ stands for the weight matrix is trained by the NN. When _t_  = 1, weight matix multiple the output from iteration _t_ = 0 plus a bias. Comparing to a certain threshold $\theta$, we could used +1 and -1 to symbol the code block. 
 
-The first challenge was understanding SETL and translating it to Python. As someone unfamiliar with SETL, I found some aspects of the language difficult to understand at first. For example, something like
+In spill process, each edge bundle corresponds to a node in a Hopfield network. Edge bundle usually are the code blocks contains same parents or children node. Constraints on basic blocks are weighted by the block frequency and added to become the node bias. These blocks become connections in the Hopfield network, again weighted by block frequency [2]. The Hopfield network minimizes (possibly locally) its energy function:
 
-```
-f := { [ source, target ] } ;
-graph := { { f(x) ? x : element of edge } : edge element of graph } ;
-```
+$$
+E = -sum_n V_n * ( B_n + sum_{\text{n, m linked by b}} V_m * F_b )
+$$
 
-is indicating that any edge with an endpoint of `source` should be changed to `target`. Other places in the algorithm use `x` and `y` to represent distinct endpoints so when I initially implemented this step, I only looked at the first endpoint on an edge. Fortunately, I found the paper that introduced SETL which was a useful resource whenever I was confused about something in the language [2].
+The energy function represents the expected spill code execution frequency, or the cost of spilling. This is a Lyapunov function which never increases when a node is updated. It is guaranteed to converge to a local minimum.
 
-Another challenge is that there are places in the algorithm where a variable is used without being initialized and without any indication of what it represents. For example, during the insert spill code step, `newat` appears for the first time in the statement `newuse +:= [ [ ( newreg := newat ), true ] ] ;`. If `newat` is replaced with the name of the old register, the algorithm produces expected results, but if I was writing production quality code, I would want to confirm what this variable represents.
-
-Finally, the third challenge of this algorithm was that it uses global variables to store data used in multiple steps of the algorithm. Implementing the code this way made it difficult to test and experiment with specific examples. I ended up refactoring the code to eliminate global variables and share state using function parameters instead.
+## Conclusion
+In this project, I reviewed the main strategies for solving register allocation problems in compilers. The graph coloring algorithm is reimplemented in this project. Among them, the limited number of physical registers is the focus of the register allocation problem. Spill effectively solves the problem of insufficient registers. However, the complex relationship of real-world code blocks will make the cost of constructing a huge graph unacceptable. Therefore, in the design of modern compilers, LLVM, the graph coloring algorithm is not used, and the linear scan algorithm is applied. As the name implies, the linear scan algorithm works by visiting live ranges in a linear order. It maintains an active list of live ranges that are live at the current point in the function, and this is how it detects interference without computing the full interference graph. Since LLVM is a colossal engineering project, reviewing the code to gain LLVM design insight is the only way. By reviewing the specific code and comments of LLVM, I found that LLVM applies Hopfield Network to optimize the practice of split and spill. In this article, I specified the relevant mathematical model, and the specific code will be reimplemented in the future.
 
 ## Resources
 
-1. G. Chaitin. 2004. Register allocation and spilling via graph coloring. SIGPLAN Not. 39, 4 (April 2004), 66–74. DOI:https://doi.org/10.1145/989393.989403
-    1. Paper also available here: https://cs.gmu.edu/~white/CS640/p98-chaitin.pdf
-2. K. Kennedy, J. Schwartz. 1975. An introduction to the set theoretical language SETL. Computers & Mathematics with Applications. Volume 1, Issue 1, 97-119. DOI:https://doi.org/10.1016/0898-1221(75)90011-5.
-3. V. Vene. 2010. Register allocation. http://kodu.ut.ee/~varmo/TM2010/slides/tm-reg.pdf
-4. M. Perkowski. 2001. Register allocation (via graph coloring). http://web.cecs.pdx.edu/~mperkows/temp/register-allocation.pdf
-
-## Packages used
-
-* [matplotlib](https://matplotlib.org/)
-* [networkx](https://networkx.github.io/)
+1. Chaitin, Gregory. “Register Allocation and Spilling via Graph Coloring.” ACM SIGPLAN Notices 39, no. 4 (April 2004): 66–74. https://doi.org/10.1145/989393.989403.
+2. The LLVM Compiler Infrastructure. 2016. Reprint, LLVM, 2022. https://github.com/llvm/llvm-project.
